@@ -1,0 +1,274 @@
+{
+  "name": "Google Ads Weekly Performance to LarkBase",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [1],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "weekly-trigger",
+      "name": "Weekly Trigger (Monday 8AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "customer_id",
+              "value": "YOUR_GOOGLE_ADS_CUSTOMER_ID"
+            },
+            {
+              "name": "client_name",
+              "value": "YOUR_CLIENT_NAME"
+            },
+            {
+              "name": "currency",
+              "value": "MYR"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "client-config",
+      "name": "Client Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resource": "report",
+        "operation": "get",
+        "customerId": "={{ $json.customer_id }}",
+        "query": "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.ctr, metrics.average_cpc, metrics.cost_per_conversion, segments.date FROM campaign WHERE segments.date DURING LAST_7_DAYS AND campaign.status = 'ENABLED'",
+        "additionalFields": {}
+      },
+      "id": "google-ads-this-week",
+      "name": "Google Ads - This Week Data",
+      "type": "n8n-nodes-base.googleAds",
+      "typeVersion": 1,
+      "position": [680, 200],
+      "credentials": {
+        "googleAdsOAuth2Api": {
+          "id": "YOUR_GOOGLE_ADS_CREDENTIAL_ID",
+          "name": "Google Ads account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "report",
+        "operation": "get",
+        "customerId": "={{ $json.customer_id }}",
+        "query": "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.ctr, metrics.average_cpc, metrics.cost_per_conversion, segments.date FROM campaign WHERE segments.date DURING LAST_14_DAYS_EXCLUDING_LAST_7_DAYS AND campaign.status = 'ENABLED'",
+        "additionalFields": {}
+      },
+      "id": "google-ads-last-week",
+      "name": "Google Ads - Last Week Data",
+      "type": "n8n-nodes-base.googleAds",
+      "typeVersion": 1,
+      "position": [680, 400],
+      "credentials": {
+        "googleAdsOAuth2Api": {
+          "id": "YOUR_GOOGLE_ADS_CREDENTIAL_ID",
+          "name": "Google Ads account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process and aggregate Google Ads data by campaign type\nconst thisWeekData = $input.first().json;\nconst lastWeekData = $input.all()[1].json;\nconst clientInfo = $('Client Configuration').first().json;\n\n// Helper function to aggregate by campaign type\nfunction aggregateByCampaignType(data, weekLabel) {\n  const results = data.results || [];\n  const aggregated = {};\n  \n  results.forEach(row => {\n    const campaignType = row.campaign?.advertising_channel_type || 'UNKNOWN';\n    const cost = (row.metrics?.cost_micros || 0) / 1000000;\n    const clicks = row.metrics?.clicks || 0;\n    const impressions = row.metrics?.impressions || 0;\n    const conversions = row.metrics?.conversions || 0;\n    const conversionValue = row.metrics?.conversions_value || 0;\n    \n    if (!aggregated[campaignType]) {\n      aggregated[campaignType] = {\n        campaign_type: campaignType,\n        impressions: 0,\n        clicks: 0,\n        cost: 0,\n        conversions: 0,\n        conversion_value: 0,\n        week: weekLabel\n      };\n    }\n    \n    aggregated[campaignType].impressions += impressions;\n    aggregated[campaignType].clicks += clicks;\n    aggregated[campaignType].cost += cost;\n    aggregated[campaignType].conversions += conversions;\n    aggregated[campaignType].conversion_value += conversionValue;\n  });\n  \n  // Calculate derived metrics\n  Object.values(aggregated).forEach(agg => {\n    agg.ctr = agg.impressions > 0 ? (agg.clicks / agg.impressions) * 100 : 0;\n    agg.avg_cpc = agg.clicks > 0 ? agg.cost / agg.clicks : 0;\n    agg.cost_per_conversion = agg.conversions > 0 ? agg.cost / agg.conversions : 0;\n    agg.conversion_rate = agg.clicks > 0 ? (agg.conversions / agg.clicks) * 100 : 0;\n    agg.roas = agg.cost > 0 ? agg.conversion_value / agg.cost : 0;\n  });\n  \n  return aggregated;\n}\n\n// Process both weeks\nconst thisWeek = aggregateByCampaignType(thisWeekData, 'This Week');\nconst lastWeek = aggregateByCampaignType(lastWeekData, 'Last Week');\n\n// Map campaign types to friendly names\nconst campaignTypeMap = {\n  'SEARCH': 'Search Campaign',\n  'DISPLAY': 'Display Campaign',\n  'PERFORMANCE_MAX': 'Performance Max',\n  'SHOPPING': 'Shopping Campaign',\n  'VIDEO': 'Video Campaign'\n};\n\n// Create comparison records for each campaign type\nconst comparisonRecords = [];\nconst allTypes = new Set([...Object.keys(thisWeek), ...Object.keys(lastWeek)]);\n\nallTypes.forEach(type => {\n  const thisWeekData = thisWeek[type] || {};\n  const lastWeekData = lastWeek[type] || {};\n  \n  const thisWeekCost = thisWeekData.cost || 0;\n  const lastWeekCost = lastWeekData.cost || 0;\n  const thisWeekClicks = thisWeekData.clicks || 0;\n  const lastWeekClicks = lastWeekData.clicks || 0;\n  const thisWeekImpressions = thisWeekData.impressions || 0;\n  const lastWeekImpressions = lastWeekData.impressions || 0;\n  const thisWeekConversions = thisWeekData.conversions || 0;\n  const lastWeekConversions = lastWeekData.conversions || 0;\n  const thisWeekConversionValue = thisWeekData.conversion_value || 0;\n  const lastWeekConversionValue = lastWeekData.conversion_value || 0;\n  \n  // Calculate week-over-week changes\n  const costChange = lastWeekCost > 0 ? ((thisWeekCost - lastWeekCost) / lastWeekCost * 100) : 0;\n  const clicksChange = lastWeekClicks > 0 ? ((thisWeekClicks - lastWeekClicks) / lastWeekClicks * 100) : 0;\n  const impressionsChange = lastWeekImpressions > 0 ? ((thisWeekImpressions - lastWeekImpressions) / lastWeekImpressions * 100) : 0;\n  const conversionsChange = lastWeekConversions > 0 ? ((thisWeekConversions - lastWeekConversions) / lastWeekConversions * 100) : 0;\n  \n  comparisonRecords.push({\n    client_name: clientInfo.client_name,\n    campaign_type: campaignTypeMap[type] || type,\n    week_start_date: new Date(Date.now() - 7*24*60*60*1000).toISOString().split('T')[0],\n    week_end_date: new Date().toISOString().split('T')[0],\n    \n    // This Week Metrics\n    impressions_this_week: Math.round(thisWeekImpressions),\n    clicks_this_week: Math.round(thisWeekClicks),\n    cost_this_week: parseFloat(thisWeekCost.toFixed(2)),\n    conversions_this_week: parseFloat(thisWeekConversions.toFixed(2)),\n    conversion_value_this_week: parseFloat(thisWeekConversionValue.toFixed(2)),\n    ctr_this_week: parseFloat((thisWeekData.ctr || 0).toFixed(2)),\n    avg_cpc_this_week: parseFloat((thisWeekData.avg_cpc || 0).toFixed(2)),\n    cost_per_conversion_this_week: parseFloat((thisWeekData.cost_per_conversion || 0).toFixed(2)),\n    conversion_rate_this_week: parseFloat((thisWeekData.conversion_rate || 0).toFixed(2)),\n    roas_this_week: parseFloat((thisWeekData.roas || 0).toFixed(2)),\n    \n    // Last Week Metrics\n    impressions_last_week: Math.round(lastWeekImpressions),\n    clicks_last_week: Math.round(lastWeekClicks),\n    cost_last_week: parseFloat(lastWeekCost.toFixed(2)),\n    conversions_last_week: parseFloat(lastWeekConversions.toFixed(2)),\n    conversion_value_last_week: parseFloat(lastWeekConversionValue.toFixed(2)),\n    ctr_last_week: parseFloat((lastWeekData.ctr || 0).toFixed(2)),\n    avg_cpc_last_week: parseFloat((lastWeekData.avg_cpc || 0).toFixed(2)),\n    cost_per_conversion_last_week: parseFloat((lastWeekData.cost_per_conversion || 0).toFixed(2)),\n    conversion_rate_last_week: parseFloat((lastWeekData.conversion_rate || 0).toFixed(2)),\n    roas_last_week: parseFloat((lastWeekData.roas || 0).toFixed(2)),\n    \n    // Week-over-Week Changes (percentage)\n    cost_change: parseFloat(costChange.toFixed(2)),\n    clicks_change: parseFloat(clicksChange.toFixed(2)),\n    impressions_change: parseFloat(impressionsChange.toFixed(2)),\n    conversions_change: parseFloat(conversionsChange.toFixed(2)),\n    \n    currency: clientInfo.currency,\n    report_generated_at: new Date().toISOString()\n  });\n});\n\nreturn comparisonRecords.map(record => ({ json: record }));"
+      },
+      "id": "process-compare-data",
+      "name": "Process & Compare Campaign Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "app_token",
+              "value": "YOUR_LARK_APP_TOKEN"
+            },
+            {
+              "name": "table_id",
+              "value": "YOUR_LARK_TABLE_ID"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lark-config",
+      "name": "Lark Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "app_id",
+              "value": "YOUR_FEISHU_APP_ID"
+            },
+            {
+              "name": "app_secret",
+              "value": "YOUR_FEISHU_APP_SECRET"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "lark-secrets",
+      "name": "Lark Secrets",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"app_id\": \"{{ $json.app_id }}\",\n  \"app_secret\": \"{{ $json.app_secret }}\"\n}",
+        "options": {}
+      },
+      "id": "get-lark-token",
+      "name": "Get Lark Tenant Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "authorization",
+              "value": "=Bearer {{ $json.tenant_access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "auth-header",
+      "name": "Build Auth Header",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform processed Google Ads data to Lark Bitable format\nconst items = $input.all();\nconst authHeader = $('Build Auth Header').first().json.authorization;\n\n// Build records array for batch create\nconst records = items.map(item => {\n  const data = item.json;\n  \n  return {\n    fields: {\n      \"Client Name\": data.client_name,\n      \"Campaign Type\": data.campaign_type,\n      \"Week Start\": data.week_start_date,\n      \"Week End\": data.week_end_date,\n      \n      // This Week Metrics\n      \"Impressions (This Week)\": data.impressions_this_week,\n      \"Clicks (This Week)\": data.clicks_this_week,\n      \"Cost (This Week)\": data.cost_this_week,\n      \"Conversions (This Week)\": data.conversions_this_week,\n      \"Conversion Value (This Week)\": data.conversion_value_this_week,\n      \"CTR (This Week)\": data.ctr_this_week,\n      \"Avg CPC (This Week)\": data.avg_cpc_this_week,\n      \"Cost/Conv (This Week)\": data.cost_per_conversion_this_week,\n      \"Conv Rate (This Week)\": data.conversion_rate_this_week,\n      \"ROAS (This Week)\": data.roas_this_week,\n      \n      // Last Week Metrics\n      \"Impressions (Last Week)\": data.impressions_last_week,\n      \"Clicks (Last Week)\": data.clicks_last_week,\n      \"Cost (Last Week)\": data.cost_last_week,\n      \"Conversions (Last Week)\": data.conversions_last_week,\n      \"Conversion Value (Last Week)\": data.conversion_value_last_week,\n      \"CTR (Last Week)\": data.ctr_last_week,\n      \"Avg CPC (Last Week)\": data.avg_cpc_last_week,\n      \"Cost/Conv (Last Week)\": data.cost_per_conversion_last_week,\n      \"Conv Rate (Last Week)\": data.conversion_rate_last_week,\n      \"ROAS (Last Week)\": data.roas_last_week,\n      \n      // Week-over-Week Changes\n      \"Cost Change %\": data.cost_change,\n      \"Clicks Change %\": data.clicks_change,\n      \"Impressions Change %\": data.impressions_change,\n      \"Conversions Change %\": data.conversions_change,\n      \n      \"Currency\": data.currency,\n      \"Report Generated\": data.report_generated_at\n    }\n  };\n});\n\nreturn { json: { records, authorization: authHeader } };"
+      },
+      "id": "transform-to-lark",
+      "name": "Transform to Lark Format",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://open.feishu.cn/open-apis/bitable/v1/apps/{{ $node['Lark Configuration'].json.app_token }}/tables/{{ $node['Lark Configuration'].json.table_id }}/records/batch_create",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.authorization }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"records\": {{ JSON.stringify($json.records) }}\n}",
+        "options": {}
+      },
+      "id": "save-to-larkbase",
+      "name": "Save to LarkBase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check response and log results\nconst response = $json;\n\nif (response.code !== 0) {\n  throw new Error(`Lark API Error: ${response.code} - ${response.msg}`);\n}\n\nconst recordsCreated = response.data?.records?.length || 0;\n\nreturn {\n  json: {\n    success: true,\n    records_created: recordsCreated,\n    message: `Successfully saved ${recordsCreated} weekly performance records to LarkBase`,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "log-results",
+      "name": "Log Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 300]
+    }
+  ],
+  "connections": {
+    "Weekly Trigger (Monday 8AM)": {
+      "main": [[{"node": "Client Configuration", "type": "main", "index": 0}]]
+    },
+    "Client Configuration": {
+      "main": [
+        [
+          {"node": "Google Ads - This Week Data", "type": "main", "index": 0},
+          {"node": "Google Ads - Last Week Data", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "Google Ads - This Week Data": {
+      "main": [[{"node": "Process & Compare Campaign Data", "type": "main", "index": 0}]]
+    },
+    "Google Ads - Last Week Data": {
+      "main": [[{"node": "Process & Compare Campaign Data", "type": "main", "index": 0}]]
+    },
+    "Process & Compare Campaign Data": {
+      "main": [[{"node": "Lark Configuration", "type": "main", "index": 0}]]
+    },
+    "Lark Configuration": {
+      "main": [[{"node": "Lark Secrets", "type": "main", "index": 0}]]
+    },
+    "Lark Secrets": {
+      "main": [[{"node": "Get Lark Tenant Token", "type": "main", "index": 0}]]
+    },
+    "Get Lark Tenant Token": {
+      "main": [[{"node": "Build Auth Header", "type": "main", "index": 0}]]
+    },
+    "Build Auth Header": {
+      "main": [[{"node": "Transform to Lark Format", "type": "main", "index": 0}]]
+    },
+    "Transform to Lark Format": {
+      "main": [[{"node": "Save to LarkBase", "type": "main", "index": 0}]]
+    },
+    "Save to LarkBase": {
+      "main": [[{"node": "Log Results", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1.0.0",
+  "tags": [
+    {"name": "Google Ads"},
+    {"name": "LarkBase"},
+    {"name": "Weekly Report"}
+  ]
+}
